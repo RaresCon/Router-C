@@ -16,4 +16,7 @@ extern void *queue_deq(queue q);
 /* return a true value if and only if the queue is empty */
 extern int queue_empty(queue q);
 
+/* return the lenght of the queue */
+extern int queue_length(queue q);
+
 #endif

@@ -21,6 +21,17 @@ int queue_empty(queue q)
 	return q->head == NULL;
 }
 
+int queue_length(queue q)
+{
+	int len = 0;
+	list head = q->head;
+	while (head) {
+		len++;
+		head = head->next;
+	}
+	return len;
+}
+
 void queue_enq(queue q, void *element)
 {
 	if(queue_empty(q)) {
