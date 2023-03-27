@@ -15,6 +15,7 @@ void update_ttl(char packet[]);
 struct route_table_entry *get_next_hop(uint32_t ip_dest);
 struct arp_entry *get_arp_entry(uint32_t given_ip);
 void check_resend_queue();
+void send_brd_arp_request(uint32_t req_ip, int interface);
 
 struct route_table_entry *rtable;
 int rtable_len;
@@ -100,9 +101,9 @@ void handle_ip_packet(char packet[], size_t len, int interface) {
 		
 	}
 
-	if (ntohs(ip_hdr->check) != checksum((uint16_t *) ip_hdr, sizeof(struct iphdr))) {
-		printf("Checksum: (GOOD)\n");
-	} else {
+	// uint16_t check_copy = ntohs(ip_hdr->check);
+	// ip_hdr->check = 0;
+	if (checksum((uint16_t *) ip_hdr, sizeof(struct iphdr))) {
 		printf("Checksum: (BAD)\n");
 		return;
 	}
@@ -132,7 +133,7 @@ void handle_ip_packet(char packet[], size_t len, int interface) {
 	}
 
 	memcpy(eth_hdr->ether_dhost, new_eth_dhost->mac, 6);
-	send_to_link(next_rtable_entry->interface, packet, ip_hdr->tot_len + sizeof(struct ether_header));
+	send_to_link(next_rtable_entry->interface, packet, len);
 }
 
 void update_ttl(char packet[]) {
