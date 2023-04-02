@@ -39,7 +39,6 @@ int main(int argc, char *argv[])
 		int interface;
 		size_t len;
 
-		printf("Waiting for link\n");
 		interface = recv_from_any_link(buf, &len);
 		DIE(interface < 0, "recv_from_any_links");
 
@@ -82,8 +81,6 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 	struct ether_header *eth_hdr = (struct ether_header *) packet;
 	struct iphdr *ip_hdr = (struct iphdr *)(packet + sizeof(struct ether_header));
 
-	printf("Source: %d | Destination: %d\n", ntohl(ip_hdr->saddr), ntohl(ip_hdr->daddr));
-
 	if (strcmp((char *) &ip_hdr->daddr, get_interface_ip(interface))) {
 		
 	}
@@ -99,6 +96,10 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 	}
 
 	struct route_table_entry *next_rtable_entry = get_next_hop(ip_hdr->daddr);
+	printf("next interface: %d\n", next_rtable_entry->interface);
+	struct in_addr next_addr;
+	next_addr.s_addr = next_rtable_entry->next_hop;
+	printf("next ip: %s\n", inet_ntoa(next_addr));
 	if (!next_rtable_entry) {
 		printf("Destination unreachable!\n");
 		return;
@@ -109,12 +110,14 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 
 	if (!check_arp_entry(next_rtable_entry->next_hop)) {
 		queue_enq(resend_queue, packet);
-		send_brd_arp_request(next_rtable_entry->next_hop, next_rtable_entry->interface);
+		send_brd_arp_request(next_rtable_entry->next_hop,
+							 next_rtable_entry->interface);
 
 		printf("Packet waiting for ARP\n");
 		return;
 	}
 
+	printf("passed ip %x\n", get_arp_entry(next_rtable_entry->next_hop)->ip);
 	memcpy(eth_hdr->ether_dhost, get_arp_entry(next_rtable_entry->next_hop)->mac, 6);
 	send_to_link(next_rtable_entry->interface, packet, len);
 }
@@ -122,8 +125,6 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 void handle_arp_packet(char *packet, size_t len, int interface) {
 	struct ether_header *eth_hdr = (struct ether_header *) packet;
 	struct arp_header *arp_hdr = (struct arp_header *)(packet + sizeof(struct ether_header));
-
-	printf("Type %d\n", ntohs(arp_hdr->op));
 
 	switch (ntohs(arp_hdr->op)) {
 	case ARP_REQUEST:
@@ -133,7 +134,6 @@ void handle_arp_packet(char *packet, size_t len, int interface) {
 		arp_hdr->tpa = arp_hdr->spa;
 		arp_hdr->spa = tpa_copy;
 		get_interface_mac(interface, arp_hdr->sha);
-		printf("%s\n", get_interface_ip(interface));
 		arp_hdr->op = htons(2);
 
 		get_interface_mac(interface, eth_hdr->ether_shost);
@@ -165,14 +165,13 @@ void check_resend_queue() {
 		struct ether_header *deq_eth_hdr = (struct ether_header *) deq_packet;
 		struct iphdr *deq_ip_hdr = (struct iphdr *)(deq_packet + sizeof(struct ether_header));
 
-		printf("Source: %d | Destination: %d\n", deq_ip_hdr->saddr, deq_ip_hdr->daddr);
-
-		struct arp_entry *check_arp = get_arp_entry(deq_ip_hdr->daddr);
+		struct arp_entry *check_arp = get_arp_entry(get_next_hop(deq_ip_hdr->daddr)->next_hop);
 
 		if (check_arp) {
 			printf("ACUM GASESC, TRIMIT!\n");
 			struct route_table_entry *next_rtable_entry = get_next_hop(deq_ip_hdr->daddr);
 
+			i++;
 			memcpy(deq_eth_hdr->ether_dhost, get_arp_entry(next_rtable_entry->next_hop)->mac, 6);
 			send_to_link(next_rtable_entry->interface, deq_packet, ntohs(deq_ip_hdr->tot_len) + sizeof(struct ether_header));
 		} else {
@@ -228,7 +227,7 @@ void add_arp_entry(uint32_t ip, uint8_t mac[]) {
 
 int check_arp_entry(uint32_t ip) {
 	for (int i = 0; i < arp_table_len; i++) {
-		if (ntohl(arp_table[i].ip) == ntohl(ip)) {
+		if (arp_table[i].ip == ip) {
 			return 1;
 		}
 	}
@@ -250,6 +249,7 @@ struct route_table_entry *get_next_hop(uint32_t ip_dest) {
 
 struct arp_entry *get_arp_entry(uint32_t given_ip) {
 	for (int i = 0; i < arp_table_len; i++) {
+		printf("%x vs %x\n", arp_table[i].ip, given_ip);
 		if (ntohl(arp_table[i].ip) == ntohl(given_ip)) {
 			return &arp_table[i];
 		}
