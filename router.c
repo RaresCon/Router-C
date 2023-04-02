@@ -81,13 +81,47 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 	struct ether_header *eth_hdr = (struct ether_header *) packet;
 	struct iphdr *ip_hdr = (struct iphdr *)(packet + sizeof(struct ether_header));
 
-	if (strcmp((char *) &ip_hdr->daddr, get_interface_ip(interface))) {
-		
-	}
-
 	if (checksum((uint16_t *) ip_hdr, sizeof(struct iphdr))) {
 		printf("Checksum: (BAD)\n");
 		return;
+	}
+
+
+	if (strcmp((char *) &ip_hdr->daddr, get_interface_ip(interface))) {
+		char pong[sizeof(struct ether_header) +
+				  sizeof(struct iphdr) +
+				  sizeof(struct icmphdr)];
+
+		struct ether_header *pong_eth = 
+			(struct ether_header*) malloc(sizeof(struct ether_header));
+		
+		pong_eth->ether_type = htons(IPv4);
+		memcpy(pong_eth->ether_dhost, eth_hdr->ether_shost, 6);
+		get_interface_mac(interface, pong_eth->ether_dhost);
+
+		struct iphdr *pong_iphdr = (struct iphdr*) malloc(sizeof(struct iphdr));
+		pong_iphdr->daddr = ip_hdr->saddr;
+		pong_iphdr->saddr = ip_hdr->daddr;
+		pong_iphdr->frag_off = 0;
+		pong_iphdr->tos = 0;
+		pong_iphdr->version = 4;
+		pong_iphdr->ihl = 5;
+		pong_iphdr->id = 1;
+		pong_iphdr->protocol = 1;
+		pong_iphdr->ttl = 64;
+		pong_iphdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
+		pong_iphdr->check = 0;
+		pong_iphdr->check = htons(checksum((uint16_t *) pong_iphdr, sizeof(struct iphdr)));
+
+		struct icmphdr *pong_icmp = (struct icmphdr*) malloc(sizeof(struct icmphdr));
+		pong_icmp->code = 0;
+		pong_icmp->type = 0;
+		pong_icmp->checksum = 0;
+		pong_icmp->checksum = htons(checksum((uint16_t *) pong_icmp, sizeof(struct icmphdr)));
+
+		memcpy(pong, pong_eth, sizeof(struct ether_header));
+		memcpy(pong + sizeof(struct ether_header), pong_eth, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr), pong_eth, sizeof(struct icmphdr));
 	}
 
 	if (ip_hdr->ttl <= 1) {
@@ -117,7 +151,6 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 		return;
 	}
 
-	printf("passed ip %x\n", get_arp_entry(next_rtable_entry->next_hop)->ip);
 	memcpy(eth_hdr->ether_dhost, get_arp_entry(next_rtable_entry->next_hop)->mac, 6);
 	send_to_link(next_rtable_entry->interface, packet, len);
 }
