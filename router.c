@@ -21,6 +21,7 @@ void add_arp_entry(uint32_t ip, uint8_t mac[]);
 int check_arp_entry(uint32_t ip);
 void check_resend_queue();
 void send_brd_arp_request(uint32_t req_ip, int interface);
+int qsort_compare(const void *first_entry, const void *second_entry);
 
 struct route_table_entry *rtable;
 int rtable_len;
@@ -71,6 +72,11 @@ void init_router(int argc, char **argv) {
 	arp_table = malloc(1);
 
 	rtable_len = read_rtable(argv[1], rtable);
+	qsort(rtable, rtable_len, sizeof(struct route_table_entry), qsort_compare);
+
+	for (int i = 0; i < rtable_len; i++) {
+		printf("%d | %d\n", ntohl(rtable[i].prefix), ntohl(rtable[i].mask));
+	}
 
 	// Do not modify this line
 	init(argc - 2, argv + 2);
@@ -86,8 +92,7 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 		return;
 	}
 
-
-	if (strcmp((char *) &ip_hdr->daddr, get_interface_ip(interface))) {
+	if (ip_hdr->daddr == inet_addr(get_interface_ip(interface))) {
 		char pong[sizeof(struct ether_header) +
 				  sizeof(struct iphdr) +
 				  sizeof(struct icmphdr)];
@@ -97,7 +102,7 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 		
 		pong_eth->ether_type = htons(IPv4);
 		memcpy(pong_eth->ether_dhost, eth_hdr->ether_shost, 6);
-		get_interface_mac(interface, pong_eth->ether_dhost);
+		get_interface_mac(interface, pong_eth->ether_shost);
 
 		struct iphdr *pong_iphdr = (struct iphdr*) malloc(sizeof(struct iphdr));
 		pong_iphdr->daddr = ip_hdr->saddr;
@@ -120,22 +125,134 @@ void handle_ip_packet(char *packet, size_t len, int interface) {
 		pong_icmp->checksum = htons(checksum((uint16_t *) pong_icmp, sizeof(struct icmphdr)));
 
 		memcpy(pong, pong_eth, sizeof(struct ether_header));
-		memcpy(pong + sizeof(struct ether_header), pong_eth, sizeof(struct iphdr));
-		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr), pong_eth, sizeof(struct icmphdr));
+		memcpy(pong + sizeof(struct ether_header), pong_iphdr, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr), pong_icmp, sizeof(struct icmphdr));
+
+		free(pong_eth);
+		free(pong_iphdr);
+		free(pong_icmp);
+
+		send_to_link(interface, pong, sizeof(struct ether_header) +
+									  sizeof(struct iphdr) +
+									  sizeof(struct icmphdr));
+		return;
 	}
 
 	if (ip_hdr->ttl <= 1) {
-		printf("Time exceeded!\n");
+		char pong[sizeof(struct ether_header) +
+				  sizeof(struct iphdr) +
+				  sizeof(struct icmphdr) +
+				  4 +
+				  sizeof(struct iphdr) +
+				  8];
+
+		struct ether_header *pong_eth = 
+			(struct ether_header*) malloc(sizeof(struct ether_header));
+		
+		pong_eth->ether_type = htons(IPv4);
+		memcpy(pong_eth->ether_dhost, eth_hdr->ether_shost, 6);
+		get_interface_mac(interface, pong_eth->ether_shost);
+
+		struct iphdr *pong_iphdr = (struct iphdr*) malloc(sizeof(struct iphdr));
+		pong_iphdr->daddr = ip_hdr->saddr;
+		pong_iphdr->saddr = ip_hdr->daddr;
+		pong_iphdr->frag_off = 0;
+		pong_iphdr->tos = 0;
+		pong_iphdr->version = 4;
+		pong_iphdr->ihl = 5;
+		pong_iphdr->id = 1;
+		pong_iphdr->protocol = 1;
+		pong_iphdr->ttl = 64;
+		pong_iphdr->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
+		pong_iphdr->check = 0;
+		pong_iphdr->check = htons(checksum((uint16_t *) pong_iphdr, sizeof(struct iphdr)));
+
+		struct icmphdr *pong_icmp = (struct icmphdr*) malloc(sizeof(struct icmphdr));
+		pong_icmp->type = 11;
+		pong_icmp->code = 0;
+		pong_icmp->checksum = 0;
+		pong_icmp->checksum = htons(checksum((uint16_t *) pong_icmp, sizeof(struct icmphdr)));
+
+		memcpy(pong, pong_eth, sizeof(struct ether_header));
+		memcpy(pong + sizeof(struct ether_header), pong_iphdr, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr), pong_icmp, sizeof(struct icmphdr));
+
+		free(pong_eth);
+		free(pong_iphdr);
+		free(pong_icmp);
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr), ip_hdr, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + 2 * sizeof(struct iphdr) + sizeof(struct icmphdr), ip_hdr + sizeof(struct iphdr), 8);
+
+		send_to_link(interface, pong, sizeof(struct ether_header) +
+									  sizeof(struct iphdr) +
+									  sizeof(struct icmphdr));
+
 		return;
 	}
 
 	struct route_table_entry *next_rtable_entry = get_next_hop(ip_hdr->daddr);
-	printf("next interface: %d\n", next_rtable_entry->interface);
-	struct in_addr next_addr;
-	next_addr.s_addr = next_rtable_entry->next_hop;
-	printf("next ip: %s\n", inet_ntoa(next_addr));
 	if (!next_rtable_entry) {
-		printf("Destination unreachable!\n");
+		printf("merge 1\n");
+		char pong[sizeof(struct ether_header) +
+				  sizeof(struct iphdr) +
+				  sizeof(struct icmphdr) +
+				  4 +
+				  sizeof(struct iphdr) +
+				  8];
+
+		struct ether_header *pong_eth = 
+			(struct ether_header*) malloc(sizeof(struct ether_header));
+		
+		pong_eth->ether_type = htons(IPv4);
+		memcpy(pong_eth->ether_dhost, eth_hdr->ether_shost, 6);
+		get_interface_mac(interface, pong_eth->ether_shost);
+
+		printf("%ld\n", sizeof(struct iphdr) +
+									sizeof(struct icmphdr) +
+									4 +
+									sizeof(struct iphdr) +
+									8);
+
+		struct iphdr *pong_iphdr = (struct iphdr*) malloc(sizeof(struct iphdr));
+		pong_iphdr->daddr = ip_hdr->saddr;
+		pong_iphdr->saddr = inet_addr(get_interface_ip(interface));
+		pong_iphdr->frag_off = 0;
+		pong_iphdr->tos = 0;
+		pong_iphdr->version = 4;
+		pong_iphdr->ihl = 5;
+		pong_iphdr->id = 1;
+		pong_iphdr->protocol = 1;
+		pong_iphdr->ttl = 64;
+		pong_iphdr->tot_len = htons(sizeof(struct iphdr) +
+									sizeof(struct icmphdr) +
+									4 +
+									sizeof(struct iphdr) +
+									8);
+		pong_iphdr->check = 0;
+		pong_iphdr->check = htons(checksum((uint16_t *) pong_iphdr, sizeof(struct iphdr)));
+
+		struct icmphdr *pong_icmp = (struct icmphdr*) malloc(sizeof(struct icmphdr));
+		pong_icmp->type = 3;
+		pong_icmp->code = 0;
+		pong_icmp->checksum = 0;
+		pong_icmp->checksum = htons(checksum((uint16_t *) pong_icmp, sizeof(struct icmphdr)));
+
+		printf("merge 4\n");
+		memcpy(pong, pong_eth, sizeof(struct ether_header));
+		memcpy(pong + sizeof(struct ether_header), pong_iphdr, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr), pong_icmp, sizeof(struct icmphdr));
+
+		printf("merge 5\n");
+		free(pong_eth);
+		free(pong_iphdr);
+		free(pong_icmp);
+		memcpy(pong + sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr), ip_hdr, sizeof(struct iphdr));
+		memcpy(pong + sizeof(struct ether_header) + 2 * sizeof(struct iphdr) + sizeof(struct icmphdr), ip_hdr + sizeof(struct iphdr), 8);
+
+		send_to_link(interface, pong, sizeof(struct ether_header) +
+									  2 * sizeof(struct iphdr) +
+									  sizeof(struct icmphdr) + 12);
+
 		return;
 	}
 
@@ -268,16 +385,25 @@ int check_arp_entry(uint32_t ip) {
 }
 
 struct route_table_entry *get_next_hop(uint32_t ip_dest) {
-	struct route_table_entry *next_hop = NULL;
+	int start = 0, stop = rtable_len - 1;
+	struct route_table_entry *best_entry = NULL;
 
-	for (int i = 0; i < rtable_len; i++) {
-		if ((rtable[i].prefix & rtable[i].mask) == (ip_dest & rtable[i].mask)) {
-			if (!next_hop || ntohl(next_hop->mask) < ntohl(rtable[i].mask)) {
-				next_hop = &rtable[i];
-			}
+	while (start <= stop) {
+		int middle = start + ((stop - start) / 2).
+		;
+		struct route_table_entry *entry = rtable + middle;
+
+		if (ntohl(entry->prefix & entry->mask) < ntohl(ip_dest & entry->mask)) {
+			start = middle + 1;
+		} else if (ntohl(entry->prefix & entry->mask) > ntohl(ip_dest & entry->mask)) {
+			stop = middle - 1;
+		} else {
+			best_entry = rtable + middle;
+			start = middle + 1;
 		}
 	}
-	return next_hop;
+
+	return best_entry;
 }
 
 struct arp_entry *get_arp_entry(uint32_t given_ip) {
@@ -288,4 +414,20 @@ struct arp_entry *get_arp_entry(uint32_t given_ip) {
 		}
 	}
 	return NULL;
+}
+
+int qsort_compare(const void *first_entry, const void *second_entry)
+{
+	uint32_t first_prefix = ((struct route_table_entry *) first_entry)->prefix;
+	uint32_t first_mask = ((struct route_table_entry *) first_entry)->mask;
+	uint32_t second_prefix = ((struct route_table_entry *) second_entry)->prefix;
+	uint32_t second_mask = ((struct route_table_entry *) second_entry)->mask;
+
+	if (ntohl(first_prefix & first_mask) > ntohl(second_prefix & second_mask)) {
+		return 1;
+	} else if (ntohl(first_prefix & first_mask) < ntohl(second_prefix & second_mask)) {
+		return -1;
+	}
+
+    return ntohl(first_mask) - ntohl(second_mask);
 }
