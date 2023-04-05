@@ -389,8 +389,7 @@ struct route_table_entry *get_next_hop(uint32_t ip_dest) {
 	struct route_table_entry *best_entry = NULL;
 
 	while (start <= stop) {
-		int middle = start + ((stop - start) / 2).
-		;
+		int middle = start + ((stop - start) / 2);
 		struct route_table_entry *entry = rtable + middle;
 
 		if (ntohl(entry->prefix & entry->mask) < ntohl(ip_dest & entry->mask)) {
